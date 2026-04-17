@@ -2,11 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import AuthPanel from './components/AuthPanel'
 import GroupGrid from './components/GroupGrid'
 import InterpretationPanel from './components/InterpretationPanel'
+import LabReportBuilder from './components/LabReportBuilder'
+import LabReportView from './components/LabReportView'
 import PracticePanel from './components/PracticePanel'
 import PracticeSettings from './components/PracticeSettings'
 import ProgressPanel from './components/ProgressPanel'
 import TestList from './components/TestList'
 import { supabase } from './lib/supabase'
+import { buildReportSelection, createLabReport } from './utils/labReport'
 import { generatePracticeValue } from './utils/practice'
 
 const LAB_TESTS_SELECT = `
@@ -58,6 +61,7 @@ function mapPracticeState(answer) {
 
 export default function App() {
   const recentGeneratedValuesRef = useRef({})
+
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [activeDailySession, setActiveDailySession] = useState(null)
@@ -81,6 +85,7 @@ export default function App() {
   const [showRangesInPractice, setShowRangesInPractice] = useState(false)
   const [practiceScope, setPracticeScope] = useState('group')
   const [practiceOnlyPriority, setPracticeOnlyPriority] = useState(true)
+
   const [progressSummary, setProgressSummary] = useState({
     totalQuestions: 0,
     correctAnswers: 0,
@@ -88,6 +93,12 @@ export default function App() {
     sessionsCount: 0,
   })
   const [recentQuestions, setRecentQuestions] = useState([])
+
+  const [activeMode, setActiveMode] = useState('practice')
+  const [labReportSelection, setLabReportSelection] = useState({})
+  const [labReportOnlyPriority, setLabReportOnlyPriority] = useState(true)
+  const [labReportShowRanges, setLabReportShowRanges] = useState(true)
+  const [generatedReport, setGeneratedReport] = useState(null)
 
   function resetAppState() {
     recentGeneratedValuesRef.current = {}
@@ -116,6 +127,11 @@ export default function App() {
       sessionsCount: 0,
     })
     setRecentQuestions([])
+    setActiveMode('practice')
+    setLabReportSelection({})
+    setLabReportOnlyPriority(true)
+    setLabReportShowRanges(true)
+    setGeneratedReport(null)
   }
 
   function prepareAppForAuthenticatedSession() {
@@ -135,15 +151,17 @@ export default function App() {
         data: { session: activeSession },
       } = await supabase.auth.getSession()
 
-      if (isMounted) {
-        setSession(activeSession)
-        if (!activeSession) {
-          resetAppState()
-        } else {
-          prepareAppForAuthenticatedSession()
-        }
-        setAuthLoading(false)
+      if (!isMounted) return
+
+      setSession(activeSession)
+
+      if (!activeSession) {
+        resetAppState()
+      } else {
+        prepareAppForAuthenticatedSession()
       }
+
+      setAuthLoading(false)
     }
 
     loadSession()
@@ -152,11 +170,13 @@ export default function App() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession)
+
       if (!nextSession) {
         resetAppState()
       } else {
         prepareAppForAuthenticatedSession()
       }
+
       setAuthLoading(false)
     })
 
@@ -205,7 +225,7 @@ export default function App() {
       setLoadingAllTests(false)
     }
 
-    async function loadProgressData() {
+    async function loadInitialProgress() {
       const { data: sessionsData, error: sessionsError } = await supabase
         .from('daily_sessions')
         .select('id, total_preguntas, correctas')
@@ -232,12 +252,12 @@ export default function App() {
           respuesta_correcta_direccion,
           fue_correcta,
           respondida_en,
-        creado_en,
+          creado_en,
           daily_sessions!inner(user_id)
         `)
         .eq('daily_sessions.user_id', session.user.id)
         .order('respondida_en', { ascending: false, nullsFirst: false })
-      .order('creado_en', { ascending: false })
+        .order('creado_en', { ascending: false })
         .limit(50)
 
       if (questionsError) {
@@ -253,8 +273,27 @@ export default function App() {
 
     loadGroups()
     loadAllTests()
-    loadProgressData()
+    loadInitialProgress()
   }, [session])
+
+  useEffect(() => {
+    if (!groups.length) {
+      setLabReportSelection({})
+      return
+    }
+
+    setLabReportSelection((currentSelection) => {
+      const defaultSelection = buildReportSelection(groups)
+
+      for (const group of groups) {
+        if (currentSelection[group.id]) {
+          defaultSelection[group.id] = currentSelection[group.id]
+        }
+      }
+
+      return defaultSelection
+    })
+  }, [groups])
 
   async function handleSelectGroup(group) {
     setSelectedGroup(group)
@@ -327,6 +366,28 @@ export default function App() {
 
     return pool
   }, [practiceScope, practiceOnlyPriority, tests, allTests, selectedTest])
+
+  const labReportTestsByGroup = useMemo(() => {
+    return groups.reduce((accumulator, group) => {
+      accumulator[group.id] = allTests.filter((test) => {
+        if (test.group_id !== group.id) {
+          return false
+        }
+
+        if (labReportOnlyPriority && !test.es_prioritario) {
+          return false
+        }
+
+        return true
+      })
+
+      return accumulator
+    }, {})
+  }, [groups, allTests, labReportOnlyPriority])
+
+  const testNameById = useMemo(() => {
+    return new Map(allTests.map((test) => [test.id, test.nombre]))
+  }, [allTests])
 
   function buildPracticeQuestion(test) {
     const correctAnswer = getRandomPracticeAnswer()
@@ -423,15 +484,14 @@ export default function App() {
       (sum, item) => sum + (item.correctas ?? 0),
       0,
     )
-    const accuracy =
-      totalQuestions > 0
-        ? Math.round((correctAnswers / totalQuestions) * 100)
-        : 0
 
     return {
       totalQuestions,
       correctAnswers,
-      accuracy,
+      accuracy:
+        totalQuestions > 0
+          ? Math.round((correctAnswers / totalQuestions) * 100)
+          : 0,
       sessionsCount: sessions.length,
     }
   }
@@ -486,12 +546,12 @@ export default function App() {
         respuesta_correcta_direccion,
         fue_correcta,
         respondida_en,
-          creado_en,
+        creado_en,
         daily_sessions!inner(user_id)
       `)
       .eq('daily_sessions.user_id', userId)
       .order('respondida_en', { ascending: false, nullsFirst: false })
-        .order('creado_en', { ascending: false })
+      .order('creado_en', { ascending: false })
       .limit(50)
 
     if (questionsError) {
@@ -624,6 +684,77 @@ export default function App() {
     }
   }
 
+  function handleToggleLabReportGroup(groupId) {
+    setLabReportSelection((currentSelection) => {
+      const current = currentSelection[groupId]
+
+      return {
+        ...currentSelection,
+        [groupId]: {
+          ...current,
+          enabled: !current.enabled,
+        },
+      }
+    })
+  }
+
+  function handleToggleLabReportSelectAll(groupId) {
+    setLabReportSelection((currentSelection) => {
+      const current = currentSelection[groupId]
+
+      return {
+        ...currentSelection,
+        [groupId]: {
+          ...current,
+          useAll: !current.useAll,
+          testIds: !current.useAll ? [] : current.testIds,
+        },
+      }
+    })
+  }
+
+  function handleToggleLabReportTest(groupId, testId) {
+    setLabReportSelection((currentSelection) => {
+      const current = currentSelection[groupId]
+      const alreadySelected = current.testIds.includes(testId)
+
+      return {
+        ...currentSelection,
+        [groupId]: {
+          ...current,
+          testIds: alreadySelected
+            ? current.testIds.filter((id) => id !== testId)
+            : [...current.testIds, testId],
+        },
+      }
+    })
+  }
+
+  function handleGenerateLabReport() {
+    const report = createLabReport({
+      groups,
+      testsByGroup: labReportTestsByGroup,
+      selection: labReportSelection,
+      recentValuesByTest: recentGeneratedValuesRef.current,
+    })
+
+    if (!report.blocks.length) {
+      setError(
+        'Selecciona al menos un bloque con exámenes disponibles antes de generar el examen.',
+      )
+      return
+    }
+
+    recentGeneratedValuesRef.current = report.nextRecentValues
+    setGeneratedReport(report)
+    setError('')
+    setActiveMode('lab-report-view')
+  }
+
+  function handleBackToLabReportBuilder() {
+    setActiveMode('lab-report-builder')
+  }
+
   async function handleSignOut() {
     const { error: signOutError } = await supabase.auth.signOut()
 
@@ -632,19 +763,15 @@ export default function App() {
     }
   }
 
+  function getTestName(testId) {
+    return testNameById.get(testId) || `Examen #${testId}`
+  }
+
   const practiceDisabled =
     loadingAllTests ||
     (practiceScope === 'group' && !selectedGroup) ||
     (practiceScope === 'selected' && !selectedTest) ||
     practicePool.length === 0
-
-  const testNameById = useMemo(() => {
-    return new Map(allTests.map((test) => [test.id, test.nombre]))
-  }, [allTests])
-
-  function getTestName(testId) {
-    return testNameById.get(testId) || `Examen #${testId}`
-  }
 
   if (authLoading) {
     return (
@@ -669,7 +796,7 @@ export default function App() {
               Lab Trainer
             </h1>
             <p className="mt-2 text-base text-slate-600">
-              Explorar grupos, exámenes e iniciar práctica
+              Explorar grupos, exámenes, practicar y construir hojas de laboratorio.
             </p>
             <p className="mt-2 text-sm text-slate-500">
               Sesión activa: {session.user.email}
@@ -685,65 +812,120 @@ export default function App() {
           </button>
         </div>
 
+        <div className="mt-6 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => setActiveMode('practice')}
+            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+              activeMode === 'practice'
+                ? 'bg-slate-900 text-white'
+                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            Modo práctica
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveMode('lab-report-builder')}
+            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+              activeMode === 'lab-report-builder' ||
+              activeMode === 'lab-report-view'
+                ? 'bg-slate-900 text-white'
+                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+            }`}
+          >
+            Modo hoja de laboratorio
+          </button>
+        </div>
+
         {error && (
           <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700">
             Error: {error}
           </div>
         )}
 
-        <GroupGrid
-          groups={groups}
-          loading={loadingGroups}
-          selectedGroup={selectedGroup}
-          onSelectGroup={handleSelectGroup}
-        />
+        {activeMode === 'practice' && (
+          <>
+            <GroupGrid
+              groups={groups}
+              loading={loadingGroups}
+              selectedGroup={selectedGroup}
+              onSelectGroup={handleSelectGroup}
+            />
 
-        <TestList
-          selectedGroup={selectedGroup}
-          selectedTest={selectedTest}
-          tests={tests}
-          loading={loadingTests}
-          practiceScope={practiceScope}
-          practiceDisabled={practiceDisabled}
-          onSelectTest={handleSelectTest}
-          onStartPractice={startPractice}
-        />
+            <TestList
+              selectedGroup={selectedGroup}
+              selectedTest={selectedTest}
+              tests={tests}
+              loading={loadingTests}
+              practiceScope={practiceScope}
+              practiceDisabled={practiceDisabled}
+              onSelectTest={handleSelectTest}
+              onStartPractice={startPractice}
+            />
 
-        <section className="mt-10">
-          <h2 className="text-2xl font-semibold text-slate-900">
-            Modo práctica
-          </h2>
+            <section className="mt-10">
+              <h2 className="text-2xl font-semibold text-slate-900">
+                Modo práctica
+              </h2>
 
-          <PracticeSettings
-            practiceScope={practiceScope}
-            practiceOnlyPriority={practiceOnlyPriority}
-            showRangesInPractice={showRangesInPractice}
-            practiceQuestion={practiceQuestion}
-            selectedGroup={selectedGroup}
-            selectedTest={selectedTest}
-            practicePoolCount={practicePool.length}
-            onPracticeScopeChange={handlePracticeScopeChange}
-            onPracticeOnlyPriorityChange={handlePracticeOnlyPriorityChange}
-            onShowRangesChange={setShowRangesInPractice}
-            onStartPracticeForSelectedTest={startPracticeForSelectedTest}
+              <PracticeSettings
+                practiceScope={practiceScope}
+                practiceOnlyPriority={practiceOnlyPriority}
+                showRangesInPractice={showRangesInPractice}
+                practiceQuestion={practiceQuestion}
+                selectedGroup={selectedGroup}
+                selectedTest={selectedTest}
+                practicePoolCount={practicePool.length}
+                onPracticeScopeChange={handlePracticeScopeChange}
+                onPracticeOnlyPriorityChange={handlePracticeOnlyPriorityChange}
+                onShowRangesChange={setShowRangesInPractice}
+                onStartPracticeForSelectedTest={startPracticeForSelectedTest}
+              />
+
+              <PracticePanel
+                practiceQuestion={practiceQuestion}
+                practiceResult={practiceResult}
+                testDetail={testDetail}
+                showRangesInPractice={showRangesInPractice}
+                onAnswerPractice={answerPractice}
+                onStartPractice={startPractice}
+              />
+            </section>
+
+            <InterpretationPanel
+              selectedTest={selectedTest}
+              practiceQuestion={practiceQuestion}
+              loadingDetail={loadingDetail}
+              testDetail={testDetail}
+            />
+          </>
+        )}
+
+        {activeMode === 'lab-report-builder' && (
+          <LabReportBuilder
+            groups={groups}
+            testsByGroup={labReportTestsByGroup}
+            selection={labReportSelection}
+            onlyPriority={labReportOnlyPriority}
+            showReferenceRanges={labReportShowRanges}
+            loading={loadingGroups || loadingAllTests}
+            onToggleGroup={handleToggleLabReportGroup}
+            onToggleSelectAll={handleToggleLabReportSelectAll}
+            onToggleTest={handleToggleLabReportTest}
+            onOnlyPriorityChange={setLabReportOnlyPriority}
+            onShowReferenceRangesChange={setLabReportShowRanges}
+            onGenerateReport={handleGenerateLabReport}
           />
+        )}
 
-          <PracticePanel
-            practiceQuestion={practiceQuestion}
-            practiceResult={practiceResult}
-            testDetail={testDetail}
-            showRangesInPractice={showRangesInPractice}
-            onAnswerPractice={answerPractice}
-            onStartPractice={startPractice}
+        {activeMode === 'lab-report-view' && (
+          <LabReportView
+            report={generatedReport}
+            showReferenceRanges={labReportShowRanges}
+            onBackToBuilder={handleBackToLabReportBuilder}
           />
-        </section>
-
-        <InterpretationPanel
-          selectedTest={selectedTest}
-          practiceQuestion={practiceQuestion}
-          loadingDetail={loadingDetail}
-          testDetail={testDetail}
-        />
+        )}
 
         <ProgressPanel
           loading={loadingProgress}
