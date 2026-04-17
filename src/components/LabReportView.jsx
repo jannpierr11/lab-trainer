@@ -25,18 +25,9 @@ function ReportTable({ block, showReferenceRanges }) {
               <tr key={entry.test.id} className="text-slate-700">
                 <td className="px-6 py-4">
                   <p className="font-medium text-slate-900">{entry.test.nombre}</p>
-                  <p className="mt-1 text-xs text-slate-500">{entry.statusLabel}</p>
                 </td>
                 <td className="px-6 py-4">
-                  <span
-                    className={`inline-flex rounded-full px-3 py-1 text-sm font-semibold ${
-                      entry.status === 'normal'
-                        ? 'bg-slate-100 text-slate-800'
-                        : entry.status === 'bajo'
-                          ? 'bg-amber-100 text-amber-800'
-                          : 'bg-rose-100 text-rose-800'
-                    }`}
-                  >
+                  <span className="text-sm font-semibold text-slate-900">
                     {entry.value}
                   </span>
                 </td>
