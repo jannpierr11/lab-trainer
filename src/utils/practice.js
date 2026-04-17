@@ -61,3 +61,25 @@ export function labelAnswer(answer) {
   if (answer === 'alto') return 'Alto'
   return answer
 }
+
+export function formatStoredAnswer(estado, direccion) {
+  if (estado === 'normal') return 'Normal'
+  if (estado === 'alterado' && direccion === 'bajo') return 'Bajo'
+  if (estado === 'alterado' && direccion === 'alto') return 'Alto'
+  return 'No registrado'
+}
+
+export function formatAnsweredAt(value) {
+  if (!value) return 'Sin fecha'
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('es-PE', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(date)
+}

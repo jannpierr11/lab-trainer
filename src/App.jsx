@@ -4,6 +4,7 @@ import GroupGrid from './components/GroupGrid'
 import InterpretationPanel from './components/InterpretationPanel'
 import PracticePanel from './components/PracticePanel'
 import PracticeSettings from './components/PracticeSettings'
+import ProgressPanel from './components/ProgressPanel'
 import TestList from './components/TestList'
 import { supabase } from './lib/supabase'
 import { generateValue } from './utils/practice'
@@ -71,6 +72,7 @@ export default function App() {
   const [loadingAllTests, setLoadingAllTests] = useState(true)
   const [loadingTests, setLoadingTests] = useState(false)
   const [loadingDetail, setLoadingDetail] = useState(false)
+  const [loadingProgress, setLoadingProgress] = useState(false)
   const [error, setError] = useState('')
 
   const [practiceQuestion, setPracticeQuestion] = useState(null)
@@ -78,6 +80,13 @@ export default function App() {
   const [showRangesInPractice, setShowRangesInPractice] = useState(false)
   const [practiceScope, setPracticeScope] = useState('group')
   const [practiceOnlyPriority, setPracticeOnlyPriority] = useState(true)
+  const [progressSummary, setProgressSummary] = useState({
+    totalQuestions: 0,
+    correctAnswers: 0,
+    accuracy: 0,
+    sessionsCount: 0,
+  })
+  const [recentQuestions, setRecentQuestions] = useState([])
 
   function resetAppState() {
     setGroups([])
@@ -95,8 +104,16 @@ export default function App() {
     setLoadingAllTests(false)
     setLoadingTests(false)
     setLoadingDetail(false)
+    setLoadingProgress(false)
     setError('')
     setActiveDailySession(null)
+    setProgressSummary({
+      totalQuestions: 0,
+      correctAnswers: 0,
+      accuracy: 0,
+      sessionsCount: 0,
+    })
+    setRecentQuestions([])
   }
 
   function prepareAppForAuthenticatedSession() {
@@ -104,6 +121,7 @@ export default function App() {
     setLoadingAllTests(true)
     setLoadingTests(false)
     setLoadingDetail(false)
+    setLoadingProgress(true)
     setError('')
   }
 
@@ -185,8 +203,87 @@ export default function App() {
       setLoadingAllTests(false)
     }
 
+    async function loadProgressData() {
+      const { data: sessionsData, error: sessionsError } = await supabase
+        .from('daily_sessions')
+        .select('id, total_preguntas, correctas')
+        .eq('user_id', session.user.id)
+        .order('fecha', { ascending: false })
+
+      if (sessionsError) {
+        setError(sessionsError.message)
+        setLoadingProgress(false)
+        return
+      }
+
+      setProgressSummary(buildProgressSummary(sessionsData ?? []))
+
+      const respondidaResult = await supabase
+        .from('daily_questions')
+        .select(`
+          id,
+          test_id,
+          valor_mostrado,
+          respuesta_usuario_estado,
+          respuesta_usuario_direccion,
+          respuesta_correcta_estado,
+          respuesta_correcta_direccion,
+          fue_correcta,
+          respondida_en,
+          daily_sessions!inner(user_id)
+        `)
+        .eq('daily_sessions.user_id', session.user.id)
+        .order('respondida_en', { ascending: false })
+        .limit(10)
+
+      if (!respondidaResult.error) {
+        setRecentQuestions(
+          (respondidaResult.data ?? []).map((item) => ({
+            ...item,
+            answered_at: item.respondida_en ?? null,
+          })),
+        )
+        setLoadingProgress(false)
+        return
+      }
+
+      const createdAtResult = await supabase
+        .from('daily_questions')
+        .select(`
+          id,
+          test_id,
+          valor_mostrado,
+          respuesta_usuario_estado,
+          respuesta_usuario_direccion,
+          respuesta_correcta_estado,
+          respuesta_correcta_direccion,
+          fue_correcta,
+          created_at,
+          daily_sessions!inner(user_id)
+        `)
+        .eq('daily_sessions.user_id', session.user.id)
+        .order('created_at', { ascending: false })
+        .limit(10)
+
+      if (createdAtResult.error) {
+        setError(createdAtResult.error.message)
+        setRecentQuestions([])
+        setLoadingProgress(false)
+        return
+      }
+
+      setRecentQuestions(
+        (createdAtResult.data ?? []).map((item) => ({
+          ...item,
+          answered_at: item.created_at ?? null,
+        })),
+      )
+      setLoadingProgress(false)
+    }
+
     loadGroups()
     loadAllTests()
+    loadProgressData()
   }, [session])
 
   async function handleSelectGroup(group) {
@@ -340,6 +437,98 @@ export default function App() {
     return nextSession
   }
 
+  function buildProgressSummary(sessions) {
+    const totalQuestions = sessions.reduce(
+      (sum, item) => sum + (item.total_preguntas ?? 0),
+      0,
+    )
+    const correctAnswers = sessions.reduce(
+      (sum, item) => sum + (item.correctas ?? 0),
+      0,
+    )
+    const accuracy =
+      totalQuestions > 0
+        ? Math.round((correctAnswers / totalQuestions) * 100)
+        : 0
+
+    return {
+      totalQuestions,
+      correctAnswers,
+      accuracy,
+      sessionsCount: sessions.length,
+    }
+  }
+
+  async function loadRecentQuestionsWithField(userId, timestampField) {
+    const selectClause = `
+      id,
+      test_id,
+      valor_mostrado,
+      respuesta_usuario_estado,
+      respuesta_usuario_direccion,
+      respuesta_correcta_estado,
+      respuesta_correcta_direccion,
+      fue_correcta,
+      ${timestampField},
+      daily_sessions!inner(user_id)
+    `
+
+    const { data, error: questionsError } = await supabase
+      .from('daily_questions')
+      .select(selectClause)
+      .eq('daily_sessions.user_id', userId)
+      .order(timestampField, { ascending: false })
+      .limit(10)
+
+    if (questionsError) {
+      return { data: null, error: questionsError }
+    }
+
+    return {
+      data: (data ?? []).map((item) => ({
+        ...item,
+        answered_at: item[timestampField] ?? null,
+      })),
+      error: null,
+    }
+  }
+
+  async function loadProgress(userId = session?.user.id) {
+    if (!userId) return
+
+    setLoadingProgress(true)
+
+    const { data: sessionsData, error: sessionsError } = await supabase
+      .from('daily_sessions')
+      .select('id, total_preguntas, correctas')
+      .eq('user_id', userId)
+      .order('fecha', { ascending: false })
+
+    if (sessionsError) {
+      setError(sessionsError.message)
+      setLoadingProgress(false)
+      return
+    }
+
+    setProgressSummary(buildProgressSummary(sessionsData ?? []))
+
+    let recentResult = await loadRecentQuestionsWithField(userId, 'respondida_en')
+
+    if (recentResult.error) {
+      recentResult = await loadRecentQuestionsWithField(userId, 'created_at')
+    }
+
+    if (recentResult.error) {
+      setError(recentResult.error.message)
+      setRecentQuestions([])
+      setLoadingProgress(false)
+      return
+    }
+
+    setRecentQuestions(recentResult.data ?? [])
+    setLoadingProgress(false)
+  }
+
   async function persistPracticeAnswer({
     dailySession,
     question,
@@ -386,6 +575,8 @@ export default function App() {
       totalQuestions: nextTotals.total_preguntas,
       correctAnswers: nextTotals.correctas,
     })
+
+    await loadProgress()
   }
 
   function handlePracticeScopeChange(scope) {
@@ -469,6 +660,14 @@ export default function App() {
     (practiceScope === 'group' && !selectedGroup) ||
     (practiceScope === 'selected' && !selectedTest) ||
     practicePool.length === 0
+
+  const testNameById = useMemo(() => {
+    return new Map(allTests.map((test) => [test.id, test.nombre]))
+  }, [allTests])
+
+  function getTestName(testId) {
+    return testNameById.get(testId) || `Examen #${testId}`
+  }
 
   if (authLoading) {
     return (
@@ -567,6 +766,13 @@ export default function App() {
           practiceQuestion={practiceQuestion}
           loadingDetail={loadingDetail}
           testDetail={testDetail}
+        />
+
+        <ProgressPanel
+          loading={loadingProgress}
+          summary={progressSummary}
+          recentQuestions={recentQuestions}
+          getTestName={getTestName}
         />
       </div>
     </main>
