@@ -44,6 +44,7 @@ function getRandomPracticeAnswer() {
 export default function App() {
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [activeDailySession, setActiveDailySession] = useState(null)
 
   const [groups, setGroups] = useState([])
   const [allTests, setAllTests] = useState([])
@@ -81,6 +82,7 @@ export default function App() {
     setLoadingTests(false)
     setLoadingDetail(false)
     setError('')
+    setActiveDailySession(null)
   }
 
   function prepareAppForAuthenticatedSession() {
@@ -260,6 +262,113 @@ export default function App() {
     setPracticeResult(null)
   }
 
+  function getPracticeDate() {
+    return new Date().toLocaleDateString('en-CA')
+  }
+
+  function resolvePracticeMode(scope) {
+    return scope
+  }
+
+  function resolvePracticeGroupId(scope) {
+    if (scope === 'group') {
+      return selectedGroup?.id ?? null
+    }
+
+    if (scope === 'selected') {
+      return selectedTest?.group_id ?? null
+    }
+
+    return null
+  }
+
+  async function ensureDailySession(scopeOverride = practiceScope) {
+    const mode = resolvePracticeMode(scopeOverride)
+    const groupId = resolvePracticeGroupId(scopeOverride)
+
+    if (
+      activeDailySession &&
+      activeDailySession.mode === mode &&
+      activeDailySession.groupId === groupId
+    ) {
+      return activeDailySession
+    }
+
+    const payload = {
+      user_id: session.user.id,
+      fecha: getPracticeDate(),
+      modo: mode,
+      group_id: groupId,
+      total_preguntas: 0,
+      correctas: 0,
+    }
+
+    const { data, error: sessionError } = await supabase
+      .from('daily_sessions')
+      .insert(payload)
+      .select('id, modo, group_id, total_preguntas, correctas')
+      .single()
+
+    if (sessionError) {
+      setError(sessionError.message)
+      return null
+    }
+
+    const nextSession = {
+      id: data.id,
+      mode: data.modo,
+      groupId: data.group_id,
+      totalQuestions: data.total_preguntas ?? 0,
+      correctAnswers: data.correctas ?? 0,
+    }
+
+    setActiveDailySession(nextSession)
+    return nextSession
+  }
+
+  async function persistPracticeAnswer({
+    dailySession,
+    question,
+    userAnswer,
+    correctAnswer,
+    wasCorrect,
+  }) {
+    const { error: questionError } = await supabase.from('daily_questions').insert({
+      session_id: dailySession.id,
+      test_id: question.test.id,
+      valor_mostrado: question.value,
+      respuesta_usuario_estado: userAnswer,
+      respuesta_correcta_estado: correctAnswer,
+      fue_correcta: wasCorrect,
+    })
+
+    if (questionError) {
+      setError(questionError.message)
+      return
+    }
+
+    const nextTotals = {
+      total_preguntas: dailySession.totalQuestions + 1,
+      correctas: dailySession.correctAnswers + (wasCorrect ? 1 : 0),
+    }
+
+    const { error: updateError } = await supabase
+      .from('daily_sessions')
+      .update(nextTotals)
+      .eq('id', dailySession.id)
+
+    if (updateError) {
+      setError(updateError.message)
+      return
+    }
+
+    setActiveDailySession({
+      ...dailySession,
+      totalQuestions: nextTotals.total_preguntas,
+      correctAnswers: nextTotals.correctas,
+    })
+  }
+
   function handlePracticeScopeChange(scope) {
     setPracticeScope(scope)
     resetPracticeFeedback()
@@ -270,21 +379,23 @@ export default function App() {
     resetPracticeFeedback()
   }
 
-  function startPractice() {
+  async function startPractice() {
     if (!practicePool.length) return
 
     const randomTest =
       practicePool[Math.floor(Math.random() * practicePool.length)]
 
+    await ensureDailySession()
     setSelectedTest(randomTest)
     setPracticeQuestion(buildPracticeQuestion(randomTest))
     setPracticeResult(null)
     setTestDetail(null)
   }
 
-  function startPracticeForSelectedTest() {
+  async function startPracticeForSelectedTest() {
     if (!selectedTest) return
 
+    await ensureDailySession('selected')
     setPracticeScope('selected')
     setPracticeQuestion(buildPracticeQuestion(selectedTest))
     setPracticeResult(null)
@@ -295,6 +406,7 @@ export default function App() {
     if (!practiceQuestion) return
 
     const wasCorrect = userAnswer === practiceQuestion.correctAnswer
+    const dailySession = await ensureDailySession()
 
     const { data, error: detailError } = await supabase
       .from('test_interpretations')
@@ -313,6 +425,16 @@ export default function App() {
       correctAnswer: practiceQuestion.correctAnswer,
       wasCorrect,
     })
+
+    if (dailySession) {
+      await persistPracticeAnswer({
+        dailySession,
+        question: practiceQuestion,
+        userAnswer,
+        correctAnswer: practiceQuestion.correctAnswer,
+        wasCorrect,
+      })
+    }
   }
 
   async function handleSignOut() {
