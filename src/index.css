@@ -28,3 +28,88 @@ textarea,
 select {
   font: inherit;
 }
+
+html.theme-light {
+  background-color: #f8fafc;
+}
+
+html.theme-dark {
+  background-color: #0d0b14;
+}
+
+.theme-dark .bg-slate-50 {
+  background-color: #120f1d !important;
+}
+
+.theme-dark .bg-white {
+  background-color: #1a1626 !important;
+}
+
+.theme-dark .bg-slate-100 {
+  background-color: #241e35 !important;
+}
+
+.theme-dark .bg-slate-900 {
+  background-color: #2c2141 !important;
+}
+
+.theme-dark .bg-slate-950 {
+  background-color: #0d0b14 !important;
+}
+
+.theme-dark .text-slate-900 {
+  color: #f5efff !important;
+}
+
+.theme-dark .text-slate-800 {
+  color: #ede4ff !important;
+}
+
+.theme-dark .text-slate-700 {
+  color: #d9cdee !important;
+}
+
+.theme-dark .text-slate-600 {
+  color: #c1b3da !important;
+}
+
+.theme-dark .text-slate-500 {
+  color: #a796c5 !important;
+}
+
+.theme-dark .border-slate-200 {
+  border-color: #322848 !important;
+}
+
+.theme-dark .border-slate-300 {
+  border-color: #48395f !important;
+}
+
+.theme-dark .hover\:bg-slate-50:hover {
+  background-color: #241e35 !important;
+}
+
+.theme-dark .hover\:bg-slate-800:hover {
+  background-color: #392a53 !important;
+}
+
+.theme-dark .bg-red-50 {
+  background-color: rgba(127, 29, 29, 0.18) !important;
+}
+
+.theme-dark .border-red-200 {
+  border-color: rgba(248, 113, 113, 0.35) !important;
+}
+
+.theme-dark .text-red-700 {
+  color: #fecaca !important;
+}
+
+.theme-dark .bg-green-50 {
+  background-color: rgba(20, 83, 45, 0.18) !important;
+}
+
+.theme-dark .text-green-700,
+.theme-dark .text-green-800 {
+  color: #bbf7d0 !important;
+}

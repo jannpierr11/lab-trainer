@@ -3,13 +3,20 @@ import AuthPanel from './components/AuthPanel'
 import GroupGrid from './components/GroupGrid'
 import InterpretationPanel from './components/InterpretationPanel'
 import LabReportBuilder from './components/LabReportBuilder'
-import LabReportView from './components/LabReportView'
+import LabReportExamView from './components/LabReportExamView'
+import LabReportResults from './components/LabReportResults'
+import MainModeTabs from './components/MainModeTabs'
 import PracticePanel from './components/PracticePanel'
 import PracticeSettings from './components/PracticeSettings'
 import ProgressPanel from './components/ProgressPanel'
 import TestList from './components/TestList'
+import ThemeToggle from './components/ThemeToggle'
 import { supabase } from './lib/supabase'
-import { buildReportSelection, createLabReport } from './utils/labReport'
+import {
+  buildLabReportExam,
+  buildLabReportResults,
+  buildReportSelection,
+} from './utils/labReport'
 import { generatePracticeValue } from './utils/practice'
 
 const LAB_TESTS_SELECT = `
@@ -40,6 +47,7 @@ const INTERPRETATIONS_SELECT = `
 `
 
 const PRACTICE_OPTIONS = ['bajo', 'normal', 'alto']
+const THEME_STORAGE_KEY = 'lab-trainer-theme'
 
 function getRandomPracticeAnswer() {
   return PRACTICE_OPTIONS[Math.floor(Math.random() * PRACTICE_OPTIONS.length)]
@@ -59,9 +67,21 @@ function mapPracticeState(answer) {
   }
 }
 
+function getInitialTheme() {
+  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY)
+
+  if (storedTheme === 'dark' || storedTheme === 'light') {
+    return storedTheme
+  }
+
+  return 'light'
+}
+
 export default function App() {
   const recentGeneratedValuesRef = useRef({})
 
+  const [theme, setTheme] = useState(getInitialTheme)
+  const [mainMode, setMainMode] = useState('practice')
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [activeDailySession, setActiveDailySession] = useState(null)
@@ -94,11 +114,23 @@ export default function App() {
   })
   const [recentQuestions, setRecentQuestions] = useState([])
 
-  const [activeMode, setActiveMode] = useState('practice')
+  const [labExamStage, setLabExamStage] = useState('config')
+  const [labExamConfig, setLabExamConfig] = useState({
+    onlyPriority: true,
+    showReferenceRanges: true,
+    combineBlocks: true,
+    timerMinutes: '0',
+  })
   const [labReportSelection, setLabReportSelection] = useState({})
-  const [labReportOnlyPriority, setLabReportOnlyPriority] = useState(true)
-  const [labReportShowRanges, setLabReportShowRanges] = useState(true)
-  const [generatedReport, setGeneratedReport] = useState(null)
+  const [labExam, setLabExam] = useState(null)
+  const [labExamAnswers, setLabExamAnswers] = useState({})
+  const [labExamResults, setLabExamResults] = useState(null)
+
+  useEffect(() => {
+    document.documentElement.classList.remove('theme-light', 'theme-dark')
+    document.documentElement.classList.add(`theme-${theme}`)
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+  }, [theme])
 
   function resetAppState() {
     recentGeneratedValuesRef.current = {}
@@ -127,11 +159,18 @@ export default function App() {
       sessionsCount: 0,
     })
     setRecentQuestions([])
-    setActiveMode('practice')
+    setMainMode('practice')
+    setLabExamStage('config')
+    setLabExamConfig({
+      onlyPriority: true,
+      showReferenceRanges: true,
+      combineBlocks: true,
+      timerMinutes: '0',
+    })
     setLabReportSelection({})
-    setLabReportOnlyPriority(true)
-    setLabReportShowRanges(true)
-    setGeneratedReport(null)
+    setLabExam(null)
+    setLabExamAnswers({})
+    setLabExamResults(null)
   }
 
   function prepareAppForAuthenticatedSession() {
@@ -185,6 +224,96 @@ export default function App() {
       subscription.unsubscribe()
     }
   }, [])
+
+  function buildProgressSummary(sessions) {
+    const totalQuestions = sessions.reduce(
+      (sum, item) => sum + (item.total_preguntas ?? 0),
+      0,
+    )
+    const correctAnswers = sessions.reduce(
+      (sum, item) => sum + (item.correctas ?? 0),
+      0,
+    )
+
+    return {
+      totalQuestions,
+      correctAnswers,
+      accuracy:
+        totalQuestions > 0
+          ? Math.round((correctAnswers / totalQuestions) * 100)
+          : 0,
+      sessionsCount: sessions.length,
+    }
+  }
+
+  function sortRecentQuestions(questions) {
+    return [...questions]
+      .map((item) => ({
+        ...item,
+        answered_at: item.respondida_en || item.creado_en || null,
+      }))
+      .sort((left, right) => {
+        const leftValue = left.answered_at
+          ? new Date(left.answered_at).getTime()
+          : 0
+        const rightValue = right.answered_at
+          ? new Date(right.answered_at).getTime()
+          : 0
+
+        return rightValue - leftValue
+      })
+      .slice(0, 10)
+  }
+
+  async function loadProgress(userId = session?.user.id) {
+    if (!userId) return
+
+    setLoadingProgress(true)
+
+    const { data: sessionsData, error: sessionsError } = await supabase
+      .from('daily_sessions')
+      .select('id, total_preguntas, correctas')
+      .eq('user_id', userId)
+      .order('fecha', { ascending: false })
+
+    if (sessionsError) {
+      setError(sessionsError.message)
+      setLoadingProgress(false)
+      return
+    }
+
+    setProgressSummary(buildProgressSummary(sessionsData ?? []))
+
+    const { data: questionsData, error: questionsError } = await supabase
+      .from('daily_questions')
+      .select(`
+        id,
+        test_id,
+        valor_mostrado,
+        respuesta_usuario_estado,
+        respuesta_usuario_direccion,
+        respuesta_correcta_estado,
+        respuesta_correcta_direccion,
+        fue_correcta,
+        respondida_en,
+        creado_en,
+        daily_sessions!inner(user_id)
+      `)
+      .eq('daily_sessions.user_id', userId)
+      .order('respondida_en', { ascending: false, nullsFirst: false })
+      .order('creado_en', { ascending: false })
+      .limit(50)
+
+    if (questionsError) {
+      setError(questionsError.message)
+      setRecentQuestions([])
+      setLoadingProgress(false)
+      return
+    }
+
+    setRecentQuestions(sortRecentQuestions(questionsData ?? []))
+    setLoadingProgress(false)
+  }
 
   useEffect(() => {
     if (!session) {
@@ -283,15 +412,15 @@ export default function App() {
     }
 
     setLabReportSelection((currentSelection) => {
-      const defaultSelection = buildReportSelection(groups)
+      const defaults = buildReportSelection(groups)
 
       for (const group of groups) {
         if (currentSelection[group.id]) {
-          defaultSelection[group.id] = currentSelection[group.id]
+          defaults[group.id] = currentSelection[group.id]
         }
       }
 
-      return defaultSelection
+      return defaults
     })
   }, [groups])
 
@@ -374,7 +503,7 @@ export default function App() {
           return false
         }
 
-        if (labReportOnlyPriority && !test.es_prioritario) {
+        if (labExamConfig.onlyPriority && !test.es_prioritario) {
           return false
         }
 
@@ -383,7 +512,7 @@ export default function App() {
 
       return accumulator
     }, {})
-  }, [groups, allTests, labReportOnlyPriority])
+  }, [groups, allTests, labExamConfig.onlyPriority])
 
   const testNameById = useMemo(() => {
     return new Map(allTests.map((test) => [test.id, test.nombre]))
@@ -473,96 +602,6 @@ export default function App() {
 
     setActiveDailySession(nextSession)
     return nextSession
-  }
-
-  function buildProgressSummary(sessions) {
-    const totalQuestions = sessions.reduce(
-      (sum, item) => sum + (item.total_preguntas ?? 0),
-      0,
-    )
-    const correctAnswers = sessions.reduce(
-      (sum, item) => sum + (item.correctas ?? 0),
-      0,
-    )
-
-    return {
-      totalQuestions,
-      correctAnswers,
-      accuracy:
-        totalQuestions > 0
-          ? Math.round((correctAnswers / totalQuestions) * 100)
-          : 0,
-      sessionsCount: sessions.length,
-    }
-  }
-
-  function sortRecentQuestions(questions) {
-    return [...questions]
-      .map((item) => ({
-        ...item,
-        answered_at: item.respondida_en || item.creado_en || null,
-      }))
-      .sort((left, right) => {
-        const leftValue = left.answered_at
-          ? new Date(left.answered_at).getTime()
-          : 0
-        const rightValue = right.answered_at
-          ? new Date(right.answered_at).getTime()
-          : 0
-
-        return rightValue - leftValue
-      })
-      .slice(0, 10)
-  }
-
-  async function loadProgress(userId = session?.user.id) {
-    if (!userId) return
-
-    setLoadingProgress(true)
-
-    const { data: sessionsData, error: sessionsError } = await supabase
-      .from('daily_sessions')
-      .select('id, total_preguntas, correctas')
-      .eq('user_id', userId)
-      .order('fecha', { ascending: false })
-
-    if (sessionsError) {
-      setError(sessionsError.message)
-      setLoadingProgress(false)
-      return
-    }
-
-    setProgressSummary(buildProgressSummary(sessionsData ?? []))
-
-    const { data: questionsData, error: questionsError } = await supabase
-      .from('daily_questions')
-      .select(`
-        id,
-        test_id,
-        valor_mostrado,
-        respuesta_usuario_estado,
-        respuesta_usuario_direccion,
-        respuesta_correcta_estado,
-        respuesta_correcta_direccion,
-        fue_correcta,
-        respondida_en,
-        creado_en,
-        daily_sessions!inner(user_id)
-      `)
-      .eq('daily_sessions.user_id', userId)
-      .order('respondida_en', { ascending: false, nullsFirst: false })
-      .order('creado_en', { ascending: false })
-      .limit(50)
-
-    if (questionsError) {
-      setError(questionsError.message)
-      setRecentQuestions([])
-      setLoadingProgress(false)
-      return
-    }
-
-    setRecentQuestions(sortRecentQuestions(questionsData ?? []))
-    setLoadingProgress(false)
   }
 
   async function persistPracticeAnswer({
@@ -684,6 +723,13 @@ export default function App() {
     }
   }
 
+  function handleLabConfigChange(key, value) {
+    setLabExamConfig((currentConfig) => ({
+      ...currentConfig,
+      [key]: value,
+    }))
+  }
+
   function handleToggleLabReportGroup(groupId) {
     setLabReportSelection((currentSelection) => {
       const current = currentSelection[groupId]
@@ -693,12 +739,13 @@ export default function App() {
         [groupId]: {
           ...current,
           enabled: !current.enabled,
+          expanded: true,
         },
       }
     })
   }
 
-  function handleToggleLabReportSelectAll(groupId) {
+  function handleToggleLabReportExpanded(groupId) {
     setLabReportSelection((currentSelection) => {
       const current = currentSelection[groupId]
 
@@ -706,8 +753,23 @@ export default function App() {
         ...currentSelection,
         [groupId]: {
           ...current,
-          useAll: !current.useAll,
-          testIds: !current.useAll ? [] : current.testIds,
+          expanded: !current.expanded,
+        },
+      }
+    })
+  }
+
+  function handleToggleLabReportSelectAll(groupId, useAll) {
+    setLabReportSelection((currentSelection) => {
+      const current = currentSelection[groupId]
+
+      return {
+        ...currentSelection,
+        [groupId]: {
+          ...current,
+          useAll,
+          enabled: true,
+          testIds: useAll ? current.testIds : current.testIds,
         },
       }
     })
@@ -722,6 +784,8 @@ export default function App() {
         ...currentSelection,
         [groupId]: {
           ...current,
+          enabled: true,
+          useAll: false,
           testIds: alreadySelected
             ? current.testIds.filter((id) => id !== testId)
             : [...current.testIds, testId],
@@ -730,29 +794,105 @@ export default function App() {
     })
   }
 
-  function handleGenerateLabReport() {
-    const report = createLabReport({
+  function handleLabReportQuantityChange(groupId, value) {
+    setLabReportSelection((currentSelection) => ({
+      ...currentSelection,
+      [groupId]: {
+        ...currentSelection[groupId],
+        quantity: value,
+      },
+    }))
+  }
+
+  function handleGenerateLabExam() {
+    const exam = buildLabReportExam({
       groups,
       testsByGroup: labReportTestsByGroup,
       selection: labReportSelection,
       recentValuesByTest: recentGeneratedValuesRef.current,
     })
 
-    if (!report.blocks.length) {
+    if (!exam.blocks.length || exam.totalEntries === 0) {
       setError(
-        'Selecciona al menos un bloque con exámenes disponibles antes de generar el examen.',
+        'Selecciona al menos un bloque con determinaciones disponibles antes de generar el examen.',
       )
       return
     }
 
-    recentGeneratedValuesRef.current = report.nextRecentValues
-    setGeneratedReport(report)
+    recentGeneratedValuesRef.current = exam.nextRecentValues
+    setLabExam(exam)
+    setLabExamAnswers({})
+    setLabExamResults(null)
+    setLabExamStage('exam')
     setError('')
-    setActiveMode('lab-report-view')
   }
 
-  function handleBackToLabReportBuilder() {
-    setActiveMode('lab-report-builder')
+  function handleLabExamAnswerChange(entryId, answer) {
+    setLabExamAnswers((currentAnswers) => ({
+      ...currentAnswers,
+      [entryId]: answer,
+    }))
+  }
+
+  async function handleFinishLabExam() {
+    if (!labExam) return
+
+    const testIds = [
+      ...new Set(
+        labExam.blocks.flatMap((block) =>
+          block.entries.map((entry) => entry.test.id),
+        ),
+      ),
+    ]
+
+    let interpretationsByTest = {}
+
+    if (testIds.length) {
+      const { data, error: interpretationsError } = await supabase
+        .from('test_interpretations')
+        .select(
+          `
+            test_id,
+            si_bajo,
+            si_normal,
+            si_alto,
+            nombre_alteracion_baja,
+            nombre_alteracion_alta,
+            error_frecuente,
+            perla_clinica
+          `,
+        )
+        .in('test_id', testIds)
+
+      if (interpretationsError) {
+        setError(interpretationsError.message)
+        return
+      }
+
+      interpretationsByTest = (data ?? []).reduce((accumulator, item) => {
+        accumulator[item.test_id] = item
+        return accumulator
+      }, {})
+    }
+
+    setLabExamResults(
+      buildLabReportResults({
+        exam: labExam,
+        answers: labExamAnswers,
+        interpretationsByTest,
+      }),
+    )
+    setLabExamStage('results')
+  }
+
+  function handleRetryLabExam() {
+    setLabExamAnswers({})
+    setLabExamResults(null)
+    setLabExamStage('exam')
+  }
+
+  function handleBackToLabConfig() {
+    setLabExamStage('config')
   }
 
   async function handleSignOut() {
@@ -788,55 +928,41 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 p-6">
+    <main className={`min-h-screen p-6 ${theme === 'dark' ? 'theme-dark bg-slate-950' : 'theme-light bg-slate-50'}`}>
       <div className="mx-auto max-w-7xl">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h1 className="text-4xl font-bold tracking-tight text-slate-900">
               Lab Trainer
             </h1>
-            <p className="mt-2 text-base text-slate-600">
-              Explorar grupos, exámenes, practicar y construir hojas de laboratorio.
+            <p className="mt-2 max-w-3xl text-base text-slate-600">
+              Entrena interpretación rápida, resuelve exámenes por hoja y revisa tu progreso desde una sola interfaz.
             </p>
             <p className="mt-2 text-sm text-slate-500">
               Sesión activa: {session.user.email}
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={handleSignOut}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:bg-slate-50"
-          >
-            Cerrar sesión
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <ThemeToggle
+              theme={theme}
+              onToggle={() =>
+                setTheme((currentTheme) =>
+                  currentTheme === 'light' ? 'dark' : 'light',
+                )
+              }
+            />
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:bg-slate-50"
+            >
+              Cerrar sesión
+            </button>
+          </div>
         </div>
 
-        <div className="mt-6 flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => setActiveMode('practice')}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-              activeMode === 'practice'
-                ? 'bg-slate-900 text-white'
-                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-            }`}
-          >
-            Modo práctica
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveMode('lab-report-builder')}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-              activeMode === 'lab-report-builder' ||
-              activeMode === 'lab-report-view'
-                ? 'bg-slate-900 text-white'
-                : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-            }`}
-          >
-            Modo hoja de laboratorio
-          </button>
-        </div>
+        <MainModeTabs activeMode={mainMode} onChange={setMainMode} />
 
         {error && (
           <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700">
@@ -844,7 +970,7 @@ export default function App() {
           </div>
         )}
 
-        {activeMode === 'practice' && (
+        {mainMode === 'practice' && (
           <>
             <GroupGrid
               groups={groups}
@@ -902,37 +1028,50 @@ export default function App() {
           </>
         )}
 
-        {activeMode === 'lab-report-builder' && (
+        {mainMode === 'lab-report' && labExamStage === 'config' && (
           <LabReportBuilder
             groups={groups}
             testsByGroup={labReportTestsByGroup}
             selection={labReportSelection}
-            onlyPriority={labReportOnlyPriority}
-            showReferenceRanges={labReportShowRanges}
-            loading={loadingGroups || loadingAllTests}
+            config={labExamConfig}
             onToggleGroup={handleToggleLabReportGroup}
+            onToggleExpanded={handleToggleLabReportExpanded}
             onToggleSelectAll={handleToggleLabReportSelectAll}
             onToggleTest={handleToggleLabReportTest}
-            onOnlyPriorityChange={setLabReportOnlyPriority}
-            onShowReferenceRangesChange={setLabReportShowRanges}
-            onGenerateReport={handleGenerateLabReport}
+            onQuantityChange={handleLabReportQuantityChange}
+            onConfigChange={handleLabConfigChange}
+            onGenerateExam={handleGenerateLabExam}
           />
         )}
 
-        {activeMode === 'lab-report-view' && (
-          <LabReportView
-            report={generatedReport}
-            showReferenceRanges={labReportShowRanges}
-            onBackToBuilder={handleBackToLabReportBuilder}
+        {mainMode === 'lab-report' && labExamStage === 'exam' && (
+          <LabReportExamView
+            exam={labExam}
+            config={labExamConfig}
+            answers={labExamAnswers}
+            onAnswerChange={handleLabExamAnswerChange}
+            onBackToConfig={handleBackToLabConfig}
+            onFinishExam={handleFinishLabExam}
           />
         )}
 
-        <ProgressPanel
-          loading={loadingProgress}
-          summary={progressSummary}
-          recentQuestions={recentQuestions}
-          getTestName={getTestName}
-        />
+        {mainMode === 'lab-report' && labExamStage === 'results' && (
+          <LabReportResults
+            exam={labExam}
+            results={labExamResults}
+            onRetry={handleRetryLabExam}
+            onBackToConfig={handleBackToLabConfig}
+          />
+        )}
+
+        {mainMode === 'progress' && (
+          <ProgressPanel
+            loading={loadingProgress}
+            summary={progressSummary}
+            recentQuestions={recentQuestions}
+            getTestName={getTestName}
+          />
+        )}
       </div>
     </main>
   )
