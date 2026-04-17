@@ -30,28 +30,85 @@ export function roundSmart(value) {
   return Math.round(value * 100) / 100
 }
 
+function countDecimals(value) {
+  if (value === null || value === undefined || value === '') return 0
+
+  const text = String(value)
+
+  if (!text.includes('.')) {
+    return 0
+  }
+
+  return text.split('.')[1].length
+}
+
+function getReferenceDecimals(test) {
+  return Math.max(
+    countDecimals(test.valor_min_ref),
+    countDecimals(test.valor_max_ref),
+    countDecimals(test.valor_min_ref_m),
+    countDecimals(test.valor_max_ref_m),
+    countDecimals(test.valor_min_ref_f),
+    countDecimals(test.valor_max_ref_f),
+  )
+}
+
+function getValuePrecision(test, min, max) {
+  const explicitDecimals = getReferenceDecimals(test)
+  const span = Math.abs(max - min)
+
+  if (explicitDecimals >= 2) return 2
+  if (explicitDecimals === 1) return 1
+  if (span <= 1) return 2
+  if (span <= 20) return 1
+  return 0
+}
+
+function roundToPrecision(value, precision) {
+  const factor = 10 ** precision
+  return Math.round(value * factor) / factor
+}
+
+function randomBetween(min, max) {
+  return min + Math.random() * (max - min)
+}
+
 export function generateValue(test, type) {
   const { min, max } = getRange(test)
   const span = max - min
+  const safeSpan = span > 0 ? span : Math.max(Math.abs(max || min), 1)
+  const precision = getValuePrecision(test, min, max)
 
   if (type === 'normal') {
-    const value = min + Math.random() * span
-    return roundSmart(value)
+    const innerMargin = safeSpan * 0.05
+    const start = min + innerMargin
+    const end = max - innerMargin
+    const lowerBound = start < end ? start : min
+    const upperBound = start < end ? end : max
+    return roundToPrecision(randomBetween(lowerBound, upperBound), precision)
   }
-
-  const offset = span > 1 ? span * 0.3 : Math.max(span * 0.5, 0.1)
 
   if (type === 'bajo') {
-    return roundSmart(min - offset)
+    const lowerOffset = Math.max(safeSpan * 0.15, 10 ** -precision)
+    const upperOffset = Math.max(safeSpan * 0.75, lowerOffset * 2)
+    return roundToPrecision(
+      min - randomBetween(lowerOffset, upperOffset),
+      precision,
+    )
   }
 
-  return roundSmart(max + offset)
+  const lowerOffset = Math.max(safeSpan * 0.15, 10 ** -precision)
+  const upperOffset = Math.max(safeSpan * 0.75, lowerOffset * 2)
+  return roundToPrecision(
+    max + randomBetween(lowerOffset, upperOffset),
+    precision,
+  )
 }
 
 export function generatePracticeValue(test, type, recentValues = []) {
   const normalizedRecentValues = recentValues.map((value) => Number(value))
 
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
     const candidate = generateValue(test, type)
 
     if (!normalizedRecentValues.includes(Number(candidate))) {
