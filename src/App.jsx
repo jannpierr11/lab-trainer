@@ -232,12 +232,12 @@ export default function App() {
           respuesta_correcta_direccion,
           fue_correcta,
           respondida_en,
-          created_at,
+        creado_en,
           daily_sessions!inner(user_id)
         `)
         .eq('daily_sessions.user_id', session.user.id)
         .order('respondida_en', { ascending: false, nullsFirst: false })
-        .order('created_at', { ascending: false })
+      .order('creado_en', { ascending: false })
         .limit(50)
 
       if (questionsError) {
@@ -440,7 +440,7 @@ export default function App() {
     return [...questions]
       .map((item) => ({
         ...item,
-        answered_at: item.respondida_en || item.created_at || null,
+        answered_at: item.respondida_en || item.creado_en || null,
       }))
       .sort((left, right) => {
         const leftValue = left.answered_at
@@ -486,12 +486,12 @@ export default function App() {
         respuesta_correcta_direccion,
         fue_correcta,
         respondida_en,
-        created_at,
+          creado_en,
         daily_sessions!inner(user_id)
       `)
       .eq('daily_sessions.user_id', userId)
       .order('respondida_en', { ascending: false, nullsFirst: false })
-      .order('created_at', { ascending: false })
+        .order('creado_en', { ascending: false })
       .limit(50)
 
     if (questionsError) {
