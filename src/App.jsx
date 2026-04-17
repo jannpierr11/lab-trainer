@@ -41,6 +41,20 @@ function getRandomPracticeAnswer() {
   return PRACTICE_OPTIONS[Math.floor(Math.random() * PRACTICE_OPTIONS.length)]
 }
 
+function mapPracticeState(answer) {
+  if (answer === 'normal') {
+    return {
+      estado: 'normal',
+      direccion: null,
+    }
+  }
+
+  return {
+    estado: 'alterado',
+    direccion: answer,
+  }
+}
+
 export default function App() {
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -333,12 +347,17 @@ export default function App() {
     correctAnswer,
     wasCorrect,
   }) {
+    const mappedUserAnswer = mapPracticeState(userAnswer)
+    const mappedCorrectAnswer = mapPracticeState(correctAnswer)
+
     const { error: questionError } = await supabase.from('daily_questions').insert({
       session_id: dailySession.id,
       test_id: question.test.id,
       valor_mostrado: question.value,
-      respuesta_usuario_estado: userAnswer,
-      respuesta_correcta_estado: correctAnswer,
+      respuesta_usuario_estado: mappedUserAnswer.estado,
+      respuesta_usuario_direccion: mappedUserAnswer.direccion,
+      respuesta_correcta_estado: mappedCorrectAnswer.estado,
+      respuesta_correcta_direccion: mappedCorrectAnswer.direccion,
       fue_correcta: wasCorrect,
     })
 
