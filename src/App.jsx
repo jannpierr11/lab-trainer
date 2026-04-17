@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import AuthPanel from './components/AuthPanel'
 import GroupGrid from './components/GroupGrid'
 import InterpretationPanel from './components/InterpretationPanel'
 import PracticePanel from './components/PracticePanel'
@@ -41,6 +42,9 @@ function getRandomPracticeAnswer() {
 }
 
 export default function App() {
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
   const [groups, setGroups] = useState([])
   const [allTests, setAllTests] = useState([])
   const [selectedGroup, setSelectedGroup] = useState(null)
@@ -60,7 +64,77 @@ export default function App() {
   const [practiceScope, setPracticeScope] = useState('group')
   const [practiceOnlyPriority, setPracticeOnlyPriority] = useState(true)
 
+  function resetAppState() {
+    setGroups([])
+    setAllTests([])
+    setSelectedGroup(null)
+    setTests([])
+    setSelectedTest(null)
+    setTestDetail(null)
+    setPracticeQuestion(null)
+    setPracticeResult(null)
+    setShowRangesInPractice(false)
+    setPracticeScope('group')
+    setPracticeOnlyPriority(true)
+    setLoadingGroups(false)
+    setLoadingAllTests(false)
+    setLoadingTests(false)
+    setLoadingDetail(false)
+    setError('')
+  }
+
+  function prepareAppForAuthenticatedSession() {
+    setLoadingGroups(true)
+    setLoadingAllTests(true)
+    setLoadingTests(false)
+    setLoadingDetail(false)
+    setError('')
+  }
+
   useEffect(() => {
+    let isMounted = true
+
+    async function loadSession() {
+      const {
+        data: { session: activeSession },
+      } = await supabase.auth.getSession()
+
+      if (isMounted) {
+        setSession(activeSession)
+        if (!activeSession) {
+          resetAppState()
+        } else {
+          prepareAppForAuthenticatedSession()
+        }
+        setAuthLoading(false)
+      }
+    }
+
+    loadSession()
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+      if (!nextSession) {
+        resetAppState()
+      } else {
+        prepareAppForAuthenticatedSession()
+      }
+      setAuthLoading(false)
+    })
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!session) {
+      return
+    }
+
     async function loadGroups() {
       const { data, error: groupsError } = await supabase
         .from('lab_groups')
@@ -97,7 +171,7 @@ export default function App() {
 
     loadGroups()
     loadAllTests()
-  }, [])
+  }, [session])
 
   async function handleSelectGroup(group) {
     setSelectedGroup(group)
@@ -241,21 +315,58 @@ export default function App() {
     })
   }
 
+  async function handleSignOut() {
+    const { error: signOutError } = await supabase.auth.signOut()
+
+    if (signOutError) {
+      setError(signOutError.message)
+    }
+  }
+
   const practiceDisabled =
     loadingAllTests ||
     (practiceScope === 'group' && !selectedGroup) ||
     (practiceScope === 'selected' && !selectedTest) ||
     practicePool.length === 0
 
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-50 p-6">
+        <div className="rounded-2xl border border-slate-200 bg-white px-6 py-4 text-sm text-slate-600 shadow-sm">
+          Cargando sesión...
+        </div>
+      </main>
+    )
+  }
+
+  if (!session) {
+    return <AuthPanel />
+  }
+
   return (
     <main className="min-h-screen bg-slate-50 p-6">
       <div className="mx-auto max-w-7xl">
-        <h1 className="text-4xl font-bold tracking-tight text-slate-900">
-          Lab Trainer
-        </h1>
-        <p className="mt-2 text-base text-slate-600">
-          Explorar grupos, exámenes e iniciar práctica
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h1 className="text-4xl font-bold tracking-tight text-slate-900">
+              Lab Trainer
+            </h1>
+            <p className="mt-2 text-base text-slate-600">
+              Explorar grupos, exámenes e iniciar práctica
+            </p>
+            <p className="mt-2 text-sm text-slate-500">
+              Sesión activa: {session.user.email}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-800 shadow-sm transition hover:bg-slate-50"
+          >
+            Cerrar sesión
+          </button>
+        </div>
 
         {error && (
           <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 p-4 text-red-700">
