@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import AuthPanel from './components/AuthPanel'
 import GroupGrid from './components/GroupGrid'
 import InterpretationPanel from './components/InterpretationPanel'
@@ -7,7 +7,7 @@ import PracticeSettings from './components/PracticeSettings'
 import ProgressPanel from './components/ProgressPanel'
 import TestList from './components/TestList'
 import { supabase } from './lib/supabase'
-import { generateValue } from './utils/practice'
+import { generatePracticeValue } from './utils/practice'
 
 const LAB_TESTS_SELECT = `
   id,
@@ -57,6 +57,7 @@ function mapPracticeState(answer) {
 }
 
 export default function App() {
+  const recentGeneratedValuesRef = useRef({})
   const [session, setSession] = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [activeDailySession, setActiveDailySession] = useState(null)
@@ -89,6 +90,7 @@ export default function App() {
   const [recentQuestions, setRecentQuestions] = useState([])
 
   function resetAppState() {
+    recentGeneratedValuesRef.current = {}
     setGroups([])
     setAllTests([])
     setSelectedGroup(null)
@@ -218,7 +220,7 @@ export default function App() {
 
       setProgressSummary(buildProgressSummary(sessionsData ?? []))
 
-      const respondidaResult = await supabase
+      const { data: questionsData, error: questionsError } = await supabase
         .from('daily_questions')
         .select(`
           id,
@@ -230,54 +232,22 @@ export default function App() {
           respuesta_correcta_direccion,
           fue_correcta,
           respondida_en,
-          daily_sessions!inner(user_id)
-        `)
-        .eq('daily_sessions.user_id', session.user.id)
-        .order('respondida_en', { ascending: false })
-        .limit(10)
-
-      if (!respondidaResult.error) {
-        setRecentQuestions(
-          (respondidaResult.data ?? []).map((item) => ({
-            ...item,
-            answered_at: item.respondida_en ?? null,
-          })),
-        )
-        setLoadingProgress(false)
-        return
-      }
-
-      const createdAtResult = await supabase
-        .from('daily_questions')
-        .select(`
-          id,
-          test_id,
-          valor_mostrado,
-          respuesta_usuario_estado,
-          respuesta_usuario_direccion,
-          respuesta_correcta_estado,
-          respuesta_correcta_direccion,
-          fue_correcta,
           created_at,
           daily_sessions!inner(user_id)
         `)
         .eq('daily_sessions.user_id', session.user.id)
+        .order('respondida_en', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false })
-        .limit(10)
+        .limit(50)
 
-      if (createdAtResult.error) {
-        setError(createdAtResult.error.message)
+      if (questionsError) {
+        setError(questionsError.message)
         setRecentQuestions([])
         setLoadingProgress(false)
         return
       }
 
-      setRecentQuestions(
-        (createdAtResult.data ?? []).map((item) => ({
-          ...item,
-          answered_at: item.created_at ?? null,
-        })),
-      )
+      setRecentQuestions(sortRecentQuestions(questionsData ?? []))
       setLoadingProgress(false)
     }
 
@@ -360,10 +330,17 @@ export default function App() {
 
   function buildPracticeQuestion(test) {
     const correctAnswer = getRandomPracticeAnswer()
+    const recentValues = recentGeneratedValuesRef.current[test.id] ?? []
+    const value = generatePracticeValue(test, correctAnswer, recentValues)
+
+    recentGeneratedValuesRef.current = {
+      ...recentGeneratedValuesRef.current,
+      [test.id]: [value, ...recentValues].slice(0, 5),
+    }
 
     return {
       test,
-      value: generateValue(test, correctAnswer),
+      value,
       correctAnswer,
     }
   }
@@ -459,38 +436,23 @@ export default function App() {
     }
   }
 
-  async function loadRecentQuestionsWithField(userId, timestampField) {
-    const selectClause = `
-      id,
-      test_id,
-      valor_mostrado,
-      respuesta_usuario_estado,
-      respuesta_usuario_direccion,
-      respuesta_correcta_estado,
-      respuesta_correcta_direccion,
-      fue_correcta,
-      ${timestampField},
-      daily_sessions!inner(user_id)
-    `
-
-    const { data, error: questionsError } = await supabase
-      .from('daily_questions')
-      .select(selectClause)
-      .eq('daily_sessions.user_id', userId)
-      .order(timestampField, { ascending: false })
-      .limit(10)
-
-    if (questionsError) {
-      return { data: null, error: questionsError }
-    }
-
-    return {
-      data: (data ?? []).map((item) => ({
+  function sortRecentQuestions(questions) {
+    return [...questions]
+      .map((item) => ({
         ...item,
-        answered_at: item[timestampField] ?? null,
-      })),
-      error: null,
-    }
+        answered_at: item.respondida_en || item.created_at || null,
+      }))
+      .sort((left, right) => {
+        const leftValue = left.answered_at
+          ? new Date(left.answered_at).getTime()
+          : 0
+        const rightValue = right.answered_at
+          ? new Date(right.answered_at).getTime()
+          : 0
+
+        return rightValue - leftValue
+      })
+      .slice(0, 10)
   }
 
   async function loadProgress(userId = session?.user.id) {
@@ -512,20 +474,34 @@ export default function App() {
 
     setProgressSummary(buildProgressSummary(sessionsData ?? []))
 
-    let recentResult = await loadRecentQuestionsWithField(userId, 'respondida_en')
+    const { data: questionsData, error: questionsError } = await supabase
+      .from('daily_questions')
+      .select(`
+        id,
+        test_id,
+        valor_mostrado,
+        respuesta_usuario_estado,
+        respuesta_usuario_direccion,
+        respuesta_correcta_estado,
+        respuesta_correcta_direccion,
+        fue_correcta,
+        respondida_en,
+        created_at,
+        daily_sessions!inner(user_id)
+      `)
+      .eq('daily_sessions.user_id', userId)
+      .order('respondida_en', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false })
+      .limit(50)
 
-    if (recentResult.error) {
-      recentResult = await loadRecentQuestionsWithField(userId, 'created_at')
-    }
-
-    if (recentResult.error) {
-      setError(recentResult.error.message)
+    if (questionsError) {
+      setError(questionsError.message)
       setRecentQuestions([])
       setLoadingProgress(false)
       return
     }
 
-    setRecentQuestions(recentResult.data ?? [])
+    setRecentQuestions(sortRecentQuestions(questionsData ?? []))
     setLoadingProgress(false)
   }
 
@@ -543,6 +519,7 @@ export default function App() {
       session_id: dailySession.id,
       test_id: question.test.id,
       valor_mostrado: question.value,
+      respondida_en: new Date().toISOString(),
       respuesta_usuario_estado: mappedUserAnswer.estado,
       respuesta_usuario_direccion: mappedUserAnswer.direccion,
       respuesta_correcta_estado: mappedCorrectAnswer.estado,

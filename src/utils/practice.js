@@ -48,6 +48,20 @@ export function generateValue(test, type) {
   return roundSmart(max + offset)
 }
 
+export function generatePracticeValue(test, type, recentValues = []) {
+  const normalizedRecentValues = recentValues.map((value) => Number(value))
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const candidate = generateValue(test, type)
+
+    if (!normalizedRecentValues.includes(Number(candidate))) {
+      return candidate
+    }
+  }
+
+  return generateValue(test, type)
+}
+
 export function explanationForAnswer(detail, answer) {
   if (!detail) return 'No registrado'
   if (answer === 'bajo') return detail.si_bajo || 'No registrado'
@@ -70,7 +84,7 @@ export function formatStoredAnswer(estado, direccion) {
 }
 
 export function formatAnsweredAt(value) {
-  if (!value) return 'Sin fecha'
+  if (!value) return ''
 
   const date = new Date(value)
 
